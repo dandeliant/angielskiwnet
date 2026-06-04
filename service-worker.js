@@ -1,5 +1,5 @@
 /* Angielskiwnet — Service Worker (offline, cache-first) */
-const CACHE = "angielskiwnet-v2";
+const CACHE = "angielskiwnet-v3";
 const ASSETS = [
   "./",
   "./index.html",

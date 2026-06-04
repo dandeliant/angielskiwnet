@@ -17,7 +17,7 @@
     // scal z domyślnymi, aby starsze zapisy dostały nowe pola
     return Object.assign({
       done: {}, xp: 0, streak: 0, lastDay: null, startLevel: "A1", edit: false,
-      srs: {}, wrong: [], badges: {}, flags: {}, custom: [], weekXp: {}, league: null, sound: true
+      srs: {}, wrong: [], badges: {}, flags: {}, custom: [], weekXp: {}, league: null, sound: true, srsMode: "pl"
     }, s);
   }
   function save() { localStorage.setItem(SKEY, JSON.stringify(state)); }
@@ -1397,9 +1397,28 @@
       return;
     }
     let idx = 0, reviewed = 0;
-    const view = el(`<div class="view"><h1 class="view-title">🧠 Fiszki SRS</h1><p class="view-sub" id="cnt"></p><div id="card"></div></div>`);
+    if (state.srsMode !== "en") state.srsMode = "pl";
+    const view = el(`<div class="view"><h1 class="view-title">🧠 Fiszki SRS</h1>
+      <div class="srs-modebar">
+        <span class="srs-modelbl">Najpierw pokazuj:</span>
+        <div class="srs-toggle" id="modeToggle" role="tablist">
+          <button class="srs-mode" data-mode="pl">🇵🇱 polski</button>
+          <button class="srs-mode" data-mode="en">🇬🇧 angielski</button>
+        </div>
+      </div>
+      <p class="view-sub" id="cnt"></p><div id="card"></div></div>`);
     app.appendChild(view);
     const cardWrap = view.querySelector("#card");
+    const toggle = view.querySelector("#modeToggle");
+    function syncToggle() {
+      toggle.querySelectorAll(".srs-mode").forEach(b =>
+        b.classList.toggle("active", b.dataset.mode === state.srsMode));
+    }
+    toggle.querySelectorAll(".srs-mode").forEach(b => b.onclick = () => {
+      if (state.srsMode === b.dataset.mode) return;
+      state.srsMode = b.dataset.mode; save(); syncToggle(); card();
+    });
+    syncToggle();
     function card() {
       if (idx >= due.length) {
         setFlag("didSrs"); addXp(reviewed); renderTop();
@@ -1410,15 +1429,28 @@
         return;
       }
       const c = due[idx];
+      const enFirst = state.srsMode === "en";
       view.querySelector("#cnt").textContent = `Fiszka ${idx + 1} / ${due.length}`;
+      // Przód = strona pytania (zależnie od trybu), tył = tłumaczenie.
+      const frontHtml = enFirst
+        ? `${esc(c.en)} <button class="btn small" data-say>🔊</button>`
+        : `${esc(c.pl || "—")}`;
+      const backHtml = enFirst
+        ? `<div class="srs-pl">${esc(c.pl || "—")}</div>`
+        : `<div class="srs-pl">${esc(c.en)} <button class="btn small" data-say>🔊</button></div>`;
       cardWrap.innerHTML = `<div class="srs-card">
-        <div class="srs-front">${esc(c.en)} <button class="btn small" data-say>🔊</button></div>
-        <div class="srs-back hidden" id="back"><div class="srs-pl">${esc(c.pl || "—")}</div></div>
+        <div class="srs-front">${frontHtml}</div>
+        <div class="srs-back hidden" id="back">${backHtml}</div>
         <div class="srs-actions" id="act"><button class="btn primary" id="reveal">Pokaż tłumaczenie</button></div></div>`;
-      cardWrap.querySelector("[data-say]").onclick = e => { e.stopPropagation(); speak(c.en); };
-      speak(c.en);
+      const frontSay = cardWrap.querySelector(".srs-front [data-say]");
+      if (frontSay) frontSay.onclick = e => { e.stopPropagation(); speak(c.en); };
+      // W trybie EN czytamy słowo od razu; w trybie PL dopiero po odsłonięciu.
+      if (enFirst) speak(c.en);
       cardWrap.querySelector("#reveal").onclick = () => {
         cardWrap.querySelector("#back").classList.remove("hidden");
+        const backSay = cardWrap.querySelector(".srs-back [data-say]");
+        if (backSay) backSay.onclick = e => { e.stopPropagation(); speak(c.en); };
+        if (!enFirst) speak(c.en);
         cardWrap.querySelector("#act").innerHTML = `
           <button class="btn small grade" data-q="0">Znów</button>
           <button class="btn small grade" data-q="3">Trudne</button>
