@@ -314,8 +314,9 @@
     setTimeout(() => { t.style.transition = ".4s"; t.style.opacity = "0"; }, 1800);
     setTimeout(() => t.remove(), 2300);
   }
-  // klik na .say -> wymowa
+  // klik na .say -> wymowa całej frazy (klik w pojedyncze słowo obsłuży handler .rw)
   document.addEventListener("click", e => {
+    if (e.target.closest(".rw")) return;
     const s = e.target.closest(".say");
     if (s) speak(s.dataset.say || s.textContent);
   });
@@ -695,6 +696,7 @@
       }
       if (s.image) media += `<img src="${esc(s.image)}" alt="">`;
       ctx.body.innerHTML = `<div class="theory"><h2>${esc(s.title)}</h2>${media}${s.html || ""}</div>`;
+      enhanceListenables(ctx.body);
       footNext(ctx.foot, "Rozumiem, dalej →", ctx.next);
     },
 
@@ -704,9 +706,17 @@
       (s.words || []).forEach(w => {
         const f = el(`<div class="flash">
           <div><div class="en">${esc(w.en)}</div><div class="pl">${esc(w.pl)}</div>
-          ${w.example ? `<div class="ex">„${esc(w.example)}”</div>` : ""}</div>
-          <button class="btn small">🔊</button></div>`);
-        f.querySelector("button").onclick = () => speak(w.example || w.en);
+          ${w.example ? `<div class="ex" data-ex="${esc(w.example)}">„${esc(w.example)}”</div>` : ""}</div>
+          <button class="btn small" title="Przeczytaj słowo">🔊</button></div>`);
+        f.querySelector("button").onclick = () => speak(w.en);
+        f.querySelectorAll(".en").forEach(makeClickableWords);
+        const ex = f.querySelector(".ex");
+        if (ex) {
+          makeClickableWords(ex);
+          ex.classList.add("listen-cell");
+          ex.title = "Kliknij, aby usłyszeć przykład";
+          ex.dataset.say = w.example; // klik poza słowem czyta czysty przykład bez cudzysłowów
+        }
         ctx.body.appendChild(f);
       });
       footNext(ctx.foot, "Umiem te słowa →", () => {
@@ -732,6 +742,8 @@
             <div class="row"><button class="btn small" data-play>🔊 Posłuchaj</button></div>
           </div></div>`);
         wrap.querySelector("[data-play]").onclick = () => speak(ln.en);
+        const enEl = wrap.querySelector(".en");
+        if (enEl) { makeClickableWords(enEl); enEl.classList.add("listen-cell"); enEl.dataset.say = ln.en; }
         ctx.body.appendChild(wrap);
         if (i === recIndex) ctx.body.appendChild(buildRecordBox(ln.en));
       });
@@ -746,6 +758,8 @@
         const box = el(`<div class="prompt"><div class="en">${esc(p.en)}</div><div class="pl">${esc(p.pl || "")}</div>
           <button class="btn small" data-play>🔊 Wzór</button></div>`);
         box.querySelector("[data-play]").onclick = () => speak(p.en);
+        const enEl = box.querySelector(".en");
+        if (enEl) { makeClickableWords(enEl); enEl.classList.add("listen-cell"); enEl.dataset.say = p.en; }
         box.appendChild(buildRecordBox(p.en));
         ctx.body.appendChild(box);
       });
@@ -1226,6 +1240,44 @@
     showWordTip(w, word, lookupWord(word));
   });
 
+  /* ---------------- ODSŁUCH WSZYSTKIEGO (zdania, słowa, zwroty) ---------------- */
+  // Każda angielska komórka tabeli / fraza staje się klikalna: słowo po słowie (.rw)
+  // oraz cała komórka po kliknięciu poza słowem.
+  const PL_DIACRITICS = /[ąćęłńóśżźĄĆĘŁŃÓŚŻŹ]/;
+  function enhanceListenables(container) {
+    if (!container) return;
+    // 1) frazy oznaczone .say (poza specjalnymi z data-say) -> słowa klikalne
+    container.querySelectorAll(".say").forEach(s => { if (!s.dataset.say) makeClickableWords(s); });
+    // 2) tabele teorii -> komórki angielskie klikalne (pomijamy kolumny i komórki polskie)
+    container.querySelectorAll("table.t-table").forEach(enhanceTable);
+  }
+  function enhanceTable(table) {
+    const rows = table.rows ? Array.prototype.slice.call(table.rows) : [];
+    if (!rows.length) return;
+    const headCells = Array.prototype.slice.call(rows[0].children);
+    const plCols = {};
+    headCells.forEach((th, i) => {
+      if (/^\s*(pl|po polsku|polski|polskie|tłumaczenie|znaczenie|opis|przykład pl)\s*$/i.test(th.textContent || "")) plCols[i] = true;
+    });
+    rows.forEach((row, ri) => {
+      if (ri === 0 && row.querySelector("th")) return; // wiersz nagłówka
+      Array.prototype.slice.call(row.children).forEach((cell, ci) => {
+        if (plCols[ci]) return;
+        const txt = cell.textContent || "";
+        if (!/[A-Za-z]/.test(txt) || PL_DIACRITICS.test(txt)) return; // nie czytamy polskich komórek
+        makeClickableWords(cell);
+        cell.classList.add("listen-cell");
+        cell.title = "Kliknij, aby usłyszeć";
+      });
+    });
+  }
+  // klik w angielską komórkę / przykład (poza pojedynczym słowem) -> przeczytaj całość
+  document.addEventListener("click", e => {
+    if (e.target.closest(".rw")) return;
+    const c = e.target.closest(".listen-cell");
+    if (c) speak(c.dataset.say || c.textContent.trim());
+  });
+
   /* ---------------- ODNOŚNIK DO TEORII („?”) ---------------- */
   function theoryLink(ref) {
     if (!ref) return "";
@@ -1252,6 +1304,7 @@
     </div>`);
     const ov = el(`<div class="overlay" style="z-index:60"></div>`);
     ov.appendChild(pop); document.body.appendChild(ov);
+    enhanceListenables(pop.querySelector(".theory"));
     const close = () => ov.remove();
     pop.querySelector(".close-x").onclick = close;
     pop.querySelector("#ok").onclick = close;
