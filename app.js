@@ -33,33 +33,58 @@
 
   function isStepDone(l, u, s) { return !!state.done[stepKey(l, u, s)]; }
   function unitSteps(level, unit) { return unit.steps || []; }
-  function isUnitDone(level, unit) {
+  function lvIndex(level) { return C.levels.indexOf(level); }
+  function startIdx() { return state.startIdx || 0; }
+  // poziomy PONIŻEJ wyniku testu są „zaliczone” (odblokowane do powtórki, liczone jako zrobione)
+  function isLevelCredited(i) { return i < startIdx(); }
+  function isUnitDoneRaw(level, unit) {
     const steps = unitSteps(level, unit);
     if (!steps.length) return false;
     return steps.every(st => isStepDone(level.id, unit.id, st.id));
   }
+  function isUnitDone(level, unit) {
+    return isLevelCredited(lvIndex(level)) || isUnitDoneRaw(level, unit);
+  }
+  function isLevelComplete(i) {
+    if (isLevelCredited(i)) return true;
+    const lv = C.levels[i], us = lv.units.filter(u => (u.steps || []).length);
+    return us.length > 0 && us.every(u => isUnitDoneRaw(lv, u));
+  }
+  // najwyższy poziom, na który gracz ma teraz dostęp (start z testu + zdobyte wyżej)
+  function reachableIdx() {
+    let i = startIdx();
+    while (i < C.levels.length - 1 && isLevelComplete(i)) i++;
+    return i;
+  }
+  function isLevelUnlocked(i) { return i <= reachableIdx(); }
   function unitProgress(level, unit) {
+    if (isLevelCredited(lvIndex(level))) return 100;
     const steps = unitSteps(level, unit);
     if (!steps.length) return 0;
     const d = steps.filter(st => isStepDone(level.id, unit.id, st.id)).length;
     return Math.round((d / steps.length) * 100);
   }
   function levelProgress(level) {
+    if (isLevelCredited(lvIndex(level))) return 100;
     const us = level.units.filter(u => (u.steps || []).length);
     if (!us.length) return 0;
-    const d = us.filter(u => isUnitDone(level, u)).length;
+    const d = us.filter(u => isUnitDoneRaw(level, u)).length;
     return Math.round((d / us.length) * 100);
   }
-  // pierwsza nieukończona jednostka w odblokowanym poziomie = „current”
   function isUnitUnlocked(level, idx) {
-    if (level.locked) return false;
+    const i = lvIndex(level);
+    if (!isLevelUnlocked(i)) return false;
+    if (isLevelCredited(i)) return true;
     if (idx === 0) return true;
-    return isUnitDone(level, level.units[idx - 1]);
+    return isUnitDoneRaw(level, level.units[idx - 1]);
   }
+  // pierwsza nieukończona jednostka w aktualnie zdobywanym poziomie = „current”
   function currentUnitId(level) {
-    for (let i = 0; i < level.units.length; i++) {
-      const u = level.units[i];
-      if ((u.steps || []).length && isUnitUnlocked(level, i) && !isUnitDone(level, u)) return u.id;
+    const i = lvIndex(level);
+    if (!isLevelUnlocked(i) || isLevelCredited(i)) return null;
+    for (let k = 0; k < level.units.length; k++) {
+      const u = level.units[k];
+      if ((u.steps || []).length && isUnitUnlocked(level, k) && !isUnitDoneRaw(level, u)) return u.id;
     }
     return null;
   }
@@ -225,26 +250,74 @@
         const r = correctByLevel[lv];
         if (r && r.c / r.t >= 0.5) rec = lv; else if (r) break;
       }
-      state.startLevel = rec; save();
+      const recIdx = order.indexOf(rec);
+      state.startIdx = recIdx; state.startLevel = rec; save();
       const lvObj = C.levels.find(l => l.id === rec);
+      const credited = order.slice(0, recIdx);
       app.innerHTML = "";
       app.appendChild(el(`
         <div class="view">
           <div class="result-card">
-            <p class="view-sub" style="margin:0">Twój sugerowany start to</p>
+            <p class="view-sub" style="margin:0">Twój poziom startowy to</p>
             <div class="lvl">${rec}</div>
             <h2 style="margin:4px 0 10px">${esc(lvObj.name)}</h2>
-            <p style="color:#93a4c4;max-width:460px;margin:0 auto 20px">
-              ${rec === "A1"
-                ? "Zaczynamy od bazy — solidne fundamenty to klucz do szczytu."
-                : "Świetnie! Polecamy ten poziom. Pełna treść A1 jest gotowa — wyższe poziomy uzupełniasz w trybie edycji. Możesz też zacząć od A1, by szybko powtórzyć podstawy."}
+            <p style="color:#93a4c4;max-width:480px;margin:0 auto 20px">
+              ${recIdx === 0
+                ? "Zaczynamy od bazy — solidne fundamenty to klucz do szczytu. Cały poziom A1 czeka na Ciebie."
+                : "Zaliczyliśmy Ci niższe poziomy <b style='color:#34d399'>" + credited.join(", ") + "</b> (odblokowane do powtórki), a Ty startujesz od <b style='color:#34d399'>" + rec + "</b>. Wyższe poziomy odblokujesz, zdobywając kolejne etapy szlaku."}
             </p>
+            <p class="footer-note">Możesz w każdej chwili zejść niżej, by powtórzyć materiał z zaliczonych poziomów.</p>
             <button class="btn primary" id="toMap">Przejdź na szlak →</button>
           </div>
         </div>`));
       app.querySelector("#toMap").onclick = renderMap;
     }
     step();
+  }
+
+  /* ---------------- GRAFIKA GÓRY (lewy panel) ---------------- */
+  // współrzędne poziomów na zboczu: A1 (dół) ... C2 (szczyt)
+  const MTN_PTS = [[15, 90], [29, 75], [42, 60], [55, 45], [64, 29], [50, 12]];
+  function buildMountain() {
+    const reach = reachableIdx();
+    const path = MTN_PTS.map(p => p.join(",")).join(" ");
+    let markers = "";
+    C.levels.forEach((lv, i) => {
+      const [x, y] = MTN_PTS[i];
+      const cls = i < reach ? "conq" : (i === reach ? "cur" : "lock");
+      markers += `<circle class="mk ${cls}" data-idx="${i}" cx="${x}" cy="${y}" r="3.4"></circle>`;
+      const lx = x < 50 ? x + 5 : x + 5;
+      markers += `<text class="mk-label" x="${lx}" y="${y + 1.6}">${lv.id}</text>`;
+    });
+    const [hx, hy] = MTN_PTS[reach];
+    const hiker = `<text x="${hx}" y="${hy - 4.5}" text-anchor="middle" font-size="8">🧗</text>`;
+    const cur = C.levels[reach];
+    const aside = el(`
+      <aside class="mountain-panel">
+        <div class="mtn-card">
+          <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" aria-label="Mapa góry">
+            <defs>
+              <linearGradient id="mg" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#3b5a8c"/><stop offset="1" stop-color="#16243f"/>
+              </linearGradient>
+            </defs>
+            <polygon class="mtn-body" fill="url(#mg)" points="0,100 50,8 100,100"></polygon>
+            <polygon class="mtn-snow" points="50,8 41,24 47,20 50,23 54,19 60,25"></polygon>
+            <polyline class="mtn-path" points="${path}"></polyline>
+            ${markers}
+            ${hiker}
+          </svg>
+          <div class="mtn-legend">
+            <div class="now" style="color:${cur.color}">📍 ${esc(cur.name)}</div>
+            <div class="sub">${esc(cur.altitude)} • jesteś tutaj na szlaku</div>
+          </div>
+        </div>
+      </aside>`);
+    aside.querySelectorAll(".mk").forEach(c => c.onclick = () => {
+      const band = document.getElementById("lvl_" + C.levels[+c.dataset.idx].id);
+      if (band) band.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    return aside;
   }
 
   /* ---------------- MAPA / SZLAK ---------------- */
@@ -258,23 +331,38 @@
         <button class="btn small" id="exp">⬇️ Eksportuj course.js</button>
       </div>`));
     wrap.appendChild(el(`<h1 class="view-title">Twój szlak na szczyt</h1>
-      <p class="view-sub">Zdobywaj punkty po kolei. Ukończona jednostka odblokowuje kolejną.</p>`));
+      <p class="view-sub">Start na dole (A1), wspinasz się w górę aż po szczyt (C2). Ukończony etap odblokowuje wyższy.</p>`));
 
+    const collapsed = !!state.mtnCollapsed;
+    const toggle = el(`<button class="btn small mtn-toggle">${collapsed ? "🏔️ Pokaż górę" : "⟨ Zwiń podgląd góry"}</button>`);
+    toggle.onclick = () => { state.mtnCollapsed = !state.mtnCollapsed; save(); renderMap(); };
+    wrap.appendChild(toggle);
+
+    const layout = el(`<div class="map-wrap ${collapsed ? "collapsed" : ""}"></div>`);
+    if (!collapsed) layout.appendChild(buildMountain());
+
+    const panel = el(`<div class="trail-panel"></div>`);
     const trail = el(`<div class="trail"></div>`);
-    C.levels.forEach(level => {
+    const reach = reachableIdx();
+    // odwracamy kolejność: szczyt (C2) na górze, baza (A1) na dole — wspinaczka idzie w górę
+    C.levels.slice().reverse().forEach(level => {
+      const i = lvIndex(level);
       const prog = levelProgress(level);
-      trail.appendChild(el(`
-        <div class="level-band">
+      const band = el(`
+        <div class="level-band" id="lvl_${level.id}">
           <span class="level-chip" style="border-color:${level.color}">
             <span style="width:12px;height:12px;border-radius:50%;background:${level.color};display:inline-block"></span>
             ${esc(level.name)} <span class="alt">${esc(level.altitude)}</span>
           </span>
           <span class="level-line"></span>
-        </div>`));
-      const lp = el(`<div class="lvl-progress"><i style="width:${prog}%;background:${level.color}"></i></div>`);
-      trail.appendChild(lp);
+        </div>`);
+      if (i === reach) band.dataset.cur = "1";
+      trail.appendChild(band);
+      trail.appendChild(el(`<div class="lvl-progress"><i style="width:${prog}%;background:${level.color}"></i></div>`));
       const curId = currentUnitId(level);
-      level.units.forEach((unit, idx) => {
+      // jednostki też odwrócone: w obrębie poziomu wspinamy się od u1 (niżej) do ostatniej (wyżej)
+      const unitsRev = level.units.map((u, idx) => ({ u, idx })).reverse();
+      unitsRev.forEach(({ u: unit, idx }, pos) => {
         const done = isUnitDone(level, unit);
         const unlocked = isUnitUnlocked(level, idx);
         const hasContent = (unit.steps || []).length > 0;
@@ -283,6 +371,9 @@
         if (done) cls += " done";
         else if (isCur) cls += " current";
         if (!unlocked || !hasContent) cls += " locked";
+        const sub = hasContent
+          ? (unitProgress(level, unit) + "% • " + unit.steps.length + " kroków")
+          : (done ? "✓ Zaliczone z testu" : "Wkrótce — dodaj w edycji");
         const node = el(`
           <div class="node">
             <button class="${cls}" title="${esc(unit.title)}">
@@ -292,22 +383,31 @@
             </button>
             <div class="label">
               <div class="t">${esc(unit.title)}</div>
-              <div class="s">${hasContent ? (unitProgress(level, unit) + "% • " + unit.steps.length + " kroków") : "Wkrótce — dodaj w edycji"}</div>
+              <div class="s">${sub}</div>
             </div>
           </div>`);
         node.querySelector("button").onclick = () => {
           if (!hasContent) { toast("Ta jednostka czeka na treść — włącz „Edytuj treść”."); return; }
-          if (!unlocked && !done) { toast("Najpierw ukończ wcześniejszą jednostkę."); return; }
+          if (!unlocked && !done) { toast("Najpierw zdobądź niższy etap szlaku."); return; }
           openUnit(level, unit);
         };
         trail.appendChild(node);
-        if (idx < level.units.length - 1) trail.appendChild(el(`<div class="connector"></div>`));
+        if (pos < unitsRev.length - 1) trail.appendChild(el(`<div class="connector"></div>`));
       });
     });
-    wrap.appendChild(trail);
-    wrap.appendChild(el(`<p class="footer-note">Postęp zapisuje się automatycznie w tej przeglądarce.</p>`));
+    panel.appendChild(trail);
+    panel.appendChild(el(`<p class="footer-note">Postęp zapisuje się automatycznie w tej przeglądarce.</p>`));
+    layout.appendChild(panel);
+    wrap.appendChild(layout);
     app.appendChild(wrap);
     if (state.edit) app.querySelector("#exp").onclick = exportCourse;
+
+    // przewiń do miejsca, w którym jesteś (current), a jeśli brak — do aktualnego poziomu
+    setTimeout(() => {
+      const c = app.querySelector(".dot.current");
+      if (c) c.scrollIntoView({ behavior: "smooth", block: "center" });
+      else { const b = app.querySelector('.level-band[data-cur="1"]'); if (b) b.scrollIntoView({ behavior: "smooth", block: "center" }); }
+    }, 70);
   }
 
   /* ---------------- URUCHOMIENIE JEDNOSTKI (sekwencja kroków) ---------------- */

@@ -229,6 +229,34 @@ h1.view-title{font-size:30px;margin:6px 0 2px}
 .footer-note{color:var(--muted);font-size:13px;text-align:center;margin-top:30px}
 .kbd{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:12px}
 
+/* ---------- Układ: góra (lewo) + szlak (prawo) ---------- */
+.map-wrap{display:flex;gap:24px;align-items:flex-start;position:relative}
+.map-wrap.collapsed .mountain-panel{display:none}
+.mtn-toggle{margin-bottom:14px}
+.mountain-panel{position:sticky;top:84px;flex:0 0 38%;width:38%}
+.trail-panel{flex:1;min-width:0}
+.trail-panel .trail{margin-top:0}
+.mtn-card{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:14px;box-shadow:var(--shadow)}
+.mtn-card svg{width:100%;height:auto;display:block;border-radius:12px;background:linear-gradient(180deg,#0a1730,#0e1f3d)}
+.mtn-body{stroke:#33507e;stroke-width:.6}
+.mtn-snow{fill:#e8f1ff;opacity:.92}
+.mtn-path{fill:none;stroke:#fbbf24;stroke-width:1.1;stroke-dasharray:2.5 2.5;opacity:.85;stroke-linecap:round}
+.mk{stroke:#08101f;stroke-width:1.1;cursor:pointer;transition:.15s}
+.mk:hover{stroke:#fff;r:4}
+.mk.conq{fill:#22c55e}
+.mk.cur{fill:#fbbf24;filter:drop-shadow(0 0 4px rgba(251,191,36,.8))}
+.mk.lock{fill:#46597d}
+.mk-label{fill:#cdd9f2;font:600 5px "Segoe UI",sans-serif;pointer-events:none}
+.mtn-legend{margin-top:12px;text-align:center}
+.mtn-legend .now{font-weight:800;font-size:16px}
+.mtn-legend .sub{color:var(--muted);font-size:13px}
+
+@media(max-width:900px){
+  .map-wrap{flex-direction:column}
+  .mountain-panel{position:static;width:100%;flex:none}
+  .mtn-card svg{max-height:320px}
+}
+
 @media(max-width:560px){
   .hero h1{font-size:32px}
   .node .label{max-width:170px}
