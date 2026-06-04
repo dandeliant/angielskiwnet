@@ -244,7 +244,11 @@ h1.view-title{font-size:30px;margin:6px 0 2px}
 .mk{stroke:#08101f;stroke-width:1.1;cursor:pointer;transition:.15s}
 .mk:hover{stroke:#fff;r:4}
 .mk.conq{fill:#22c55e}
-.mk.cur{fill:#fbbf24;filter:drop-shadow(0 0 4px rgba(251,191,36,.8))}
+.mk.cur{fill:#fbbf24;transform-box:fill-box;transform-origin:center;animation:mkPulse 1.6s ease-in-out infinite}
+@keyframes mkPulse{
+  0%,100%{r:3.4;filter:drop-shadow(0 0 3px rgba(251,191,36,.8))}
+  50%{r:5;filter:drop-shadow(0 0 8px rgba(251,191,36,1))}
+}
 .mk.lock{fill:#46597d}
 .mk-label{fill:#cdd9f2;font:600 5px "Segoe UI",sans-serif;pointer-events:none}
 .mtn-legend{margin-top:12px;text-align:center}

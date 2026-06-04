@@ -534,7 +534,7 @@
         <button class="btn small" id="exp">⬇️ Eksportuj course.js</button>
       </div>`));
     wrap.appendChild(el(`<h1 class="view-title">Twój szlak na szczyt</h1>
-      <p class="view-sub">Start na dole (A1), wspinasz się w górę aż po szczyt (C2). Ukończony etap odblokowuje wyższy.</p>`));
+      <p class="view-sub">Lista zaczyna się od A1 (na górze) i prowadzi w dół aż do C2. Twoją aktualną pozycję widać na świecącej kropce 📍 na grafice góry.</p>`));
 
     const collapsed = !!state.mtnCollapsed;
     const toggle = el(`<button class="btn small mtn-toggle">${collapsed ? "🏔️ Pokaż górę" : "⟨ Zwiń podgląd góry"}</button>`);
@@ -547,8 +547,8 @@
     const panel = el(`<div class="trail-panel"></div>`);
     const trail = el(`<div class="trail"></div>`);
     const reach = reachableIdx();
-    // odwracamy kolejność: szczyt (C2) na górze, baza (A1) na dole — wspinaczka idzie w górę
-    C.levels.slice().reverse().forEach(level => {
+    // kolejność naturalna: A1 na górze listy, C2 na dole
+    C.levels.slice().forEach(level => {
       const i = lvIndex(level);
       const prog = levelProgress(level);
       const band = el(`
@@ -563,8 +563,8 @@
       trail.appendChild(band);
       trail.appendChild(el(`<div class="lvl-progress"><i style="width:${prog}%;background:${level.color}"></i></div>`));
       const curId = currentUnitId(level);
-      // jednostki też odwrócone: w obrębie poziomu wspinamy się od u1 (niżej) do ostatniej (wyżej)
-      const unitsRev = level.units.map((u, idx) => ({ u, idx })).reverse();
+      // jednostki w kolejności naturalnej: u1 na górze, ostatnia na dole
+      const unitsRev = level.units.map((u, idx) => ({ u, idx }));
       unitsRev.forEach(({ u: unit, idx }, pos) => {
         const done = isUnitDone(level, unit);
         const unlocked = isUnitUnlocked(level, idx);
