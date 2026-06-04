@@ -8,19 +8,26 @@
    });
 
    TYPY KROKÓW (step.type):
-   - theory : { id, type:"theory", title, html, video?, image? }
-   - vocab  : { id, type:"vocab", title, words:[{en, pl, example}] }
-   - quiz   : { id, type:"quiz", title, theoryRef?, questions:[...] }
-   - dialog : { id, type:"dialog", title, theoryRef?, recordLine, lines:[{speaker,en,pl}] }
-   - speak  : { id, type:"speak", title, prompts:[{en,pl}] }
-   - boss   : { id, type:"boss", title, questions:[...] }
+   - theory  : { id, type:"theory", title, html, video?, image? }
+   - vocab   : { id, type:"vocab", title, words:[{en, pl, example}] }
+   - quiz    : { id, type:"quiz", title, theoryRef?, questions:[...] }
+   - dialog  : { id, type:"dialog", title, theoryRef?, recordLine, lines:[{speaker,en,pl}] }
+   - speak   : { id, type:"speak", title, prompts:[{en,pl}] }
+   - boss    : { id, type:"boss", title, questions:[...] }
+   - reading : { id, type:"reading", title, intro?, passage:"<p>...</p>", theoryRef?, questions:[...] }
+   - listen  : { id, type:"listen", title, audio:"tekst czytany przez TTS (niewidoczny)", instructions?, questions:[...] }
 
-   TYPY PYTAŃ (w quiz/boss):
+   TYPY PYTAŃ (w quiz/boss/reading/listen):
    - { kind:"choice", q, options:[...], answer:<index>, theoryRef? }
-   - { kind:"gap", q (z ___), answer:"slowo", theoryRef? }
+   - { kind:"gap", q (z ___), answer:"slowo" lub ["wariant1","wariant2"], theoryRef? }
    - { kind:"truefalse", q, answer:true|false }
    - { kind:"order", q, words:[...], answer:[poprawna kolejnosc] }
    - { kind:"match", pairs:[{a,b}], theoryRef? }
+   - { kind:"multi", q, options:[...], answers:[indeksy poprawnych] }      // wielokrotny wybór
+   - { kind:"dictation", q?, audio:"zdanie", answer:"zdanie" }             // dyktando ze słuchu
+   - { kind:"dropdown", q (z ___), options:[...], answer:<index> }         // lista rozwijana w zdaniu
+   - { kind:"categorize", q, cats:["Kat A","Kat B"], items:[{t,cat:<index kat>}] }
+   - { kind:"transform", q, given?, hint?, answer:"zdanie" lub ["wariant1","wariant2"] }
 
    theoryRef = "A1/u1/s1" -> przycisk "? teoria" obok zadania.
    ========================================================================== */

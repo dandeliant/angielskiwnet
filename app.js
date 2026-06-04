@@ -159,6 +159,7 @@
   /* ---------------- POMOCNICZE UI ---------------- */
   function el(html) { const d = document.createElement("div"); d.innerHTML = html.trim(); return d.firstElementChild; }
   function esc(s) { return (s || "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+  function stripHtml(s) { const d = document.createElement("div"); d.innerHTML = s || ""; return (d.textContent || "").replace(/\s+/g, " ").trim(); }
   function toast(msg) {
     const t = el(`<div style="position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:99;background:#1a2b4a;border:1px solid #243a5e;color:#e8eefc;padding:12px 18px;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.5)">${esc(msg)}</div>`);
     document.body.appendChild(t);
@@ -546,13 +547,50 @@
         ctx.body.appendChild(box);
       });
       footNext(ctx.foot, "Gotowe →", ctx.next);
+    },
+
+    // ZROZUMIENIE TEKSTU: czytanka widoczna nad każdym pytaniem
+    reading(ctx) {
+      const s = ctx.step;
+      const head = () => `<div class="reading-passage"><h2>${esc(s.title)} ${theoryLink(s.theoryRef)}</h2>
+        ${s.intro ? `<p style="color:#93a4c4">${esc(s.intro)}</p>` : ""}
+        <div class="passage">${s.passage || ""}</div>
+        <button class="btn small" data-listen>🔊 Przeczytaj na głos</button></div>`;
+      runQuestions(ctx, s.questions, {
+        title: s.title,
+        header: head,
+        bindHeader(body) {
+          const b = body.querySelector("[data-listen]");
+          if (b) b.onclick = () => speak(stripHtml(s.passage));
+        }
+      });
+    },
+
+    // ZE SŁUCHU: tekst odtwarzany przez TTS (niewidoczny), pytania o treść
+    listen(ctx) {
+      const s = ctx.step;
+      const head = () => `<div class="listen-box"><h2>🎧 ${esc(s.title)}</h2>
+        <p style="color:#93a4c4">${esc(s.instructions || "Posłuchaj nagrania i odpowiedz na pytania. Możesz odtwarzać wielokrotnie.")}</p>
+        <div class="row" style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+          <button class="btn" data-play>🔊 Odtwórz</button>
+          <button class="btn small" data-slow>🐢 Wolniej</button>
+        </div></div>`;
+      runQuestions(ctx, s.questions, {
+        title: s.title,
+        header: head,
+        bindHeader(body) {
+          const p = body.querySelector("[data-play]"), sl = body.querySelector("[data-slow]");
+          if (p) p.onclick = () => speak(s.audio);
+          if (sl) sl.onclick = () => speak(s.audio, 0.6);
+        }
+      });
     }
   };
 
-  /* ---------------- QUIZ / BOSS (kilka typów pytań) ---------------- */
-  function quizLike(ctx) {
-    const s = ctx.step;
-    const qs = s.questions || [];
+  /* ---------------- SILNIK PYTAŃ (quiz / boss / reading / listen) ---------------- */
+  function runQuestions(ctx, qs, opts) {
+    opts = opts || {};
+    qs = qs || [];
     let qi = 0, correct = 0;
     function show() {
       if (qi >= qs.length) {
@@ -564,7 +602,9 @@
         return;
       }
       const q = qs[qi];
-      ctx.body.innerHTML = `<p class="view-sub">${s.title} • pytanie ${qi + 1}/${qs.length}</p>`;
+      ctx.body.innerHTML = (opts.header ? opts.header() : "") +
+        `<p class="view-sub">${esc(opts.title || "")} • pytanie ${qi + 1}/${qs.length}</p>`;
+      if (opts.bindHeader) opts.bindHeader(ctx.body);
       const node = (QTYPES[q.kind] || QTYPES.choice)(q, verdict);
       ctx.body.appendChild(node);
       // przycisk „Sprawdź”/„Dalej”
@@ -580,6 +620,7 @@
     }
     show();
   }
+  function quizLike(ctx) { runQuestions(ctx, ctx.step.questions, { title: ctx.step.title }); }
 
   const QTYPES = {
     choice(q, verdict) {
@@ -605,11 +646,13 @@
       const inp = node.querySelector("input");
       inp.oninput = () => node._enableCheck && node._enableCheck();
       inp.onkeydown = e => { if (e.key === "Enter") node._check(); };
+      const answers = Array.isArray(q.answer) ? q.answer : [q.answer];
       node._check = () => {
-        const ok = norm(inp.value) === norm(q.answer);
+        const got = norm(inp.value);
+        const ok = answers.some(a => norm(a) === got);
         inp.style.borderColor = ok ? "#22c55e" : "#f87171";
         inp.disabled = true;
-        if (!ok) inp.value = inp.value + "  →  " + q.answer;
+        if (!ok) inp.value = inp.value + "  →  " + answers[0];
         verdict(ok, node);
       };
       setTimeout(() => inp.focus(), 50);
@@ -674,6 +717,143 @@
       node._check = () => {}; // dopasowanie zalicza się samo
       setTimeout(() => node._enableCheck && node._enableCheck(), 50);
       node._check = () => { if (matched < q.pairs.length) toast("Dopasuj wszystkie pary."); };
+      return node;
+    },
+
+    // WIELOKROTNY WYBÓR — zaznacz wszystkie poprawne
+    multi(q, verdict) {
+      const node = el(`<div class="q"><p class="qtext">${esc(q.q)} <span class="hint-multi">(zaznacz wszystkie poprawne)</span> ${theoryLink(q.theoryRef)}</p><div class="opts"></div></div>`);
+      const opts = node.querySelector(".opts");
+      const chosen = new Set();
+      q.options.forEach((o, k) => {
+        const b = el(`<button class="opt">${esc(o)}</button>`);
+        b.onclick = () => {
+          if (chosen.has(k)) { chosen.delete(k); b.classList.remove("sel"); }
+          else { chosen.add(k); b.classList.add("sel"); }
+          node._enableCheck && node._enableCheck();
+        };
+        opts.appendChild(b);
+      });
+      node._check = () => {
+        const ans = new Set(q.answers);
+        const ok = chosen.size === ans.size && [...chosen].every(k => ans.has(k));
+        opts.querySelectorAll(".opt").forEach((x, k) => {
+          if (ans.has(k)) x.classList.add("correct");
+          else if (chosen.has(k)) x.classList.add("wrong");
+          x.disabled = true;
+        });
+        verdict(ok, node);
+      };
+      return node;
+    },
+
+    // DYKTANDO — posłuchaj i wpisz dokładnie
+    dictation(q, verdict) {
+      const node = el(`<div class="q"><p class="qtext">${esc(q.q || "Wpisz dokładnie to, co słyszysz:")}</p>
+        <div class="row" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+          <button class="btn small" data-play>🔊 Odtwórz</button>
+          <button class="btn small" data-slow>🐢 Wolniej</button>
+        </div>
+        <input class="gap-input" placeholder="wpisz zdanie…"></div>`);
+      const inp = node.querySelector("input");
+      const text = q.audio || q.answer;
+      node.querySelector("[data-play]").onclick = () => speak(text);
+      node.querySelector("[data-slow]").onclick = () => speak(text, 0.6);
+      inp.oninput = () => node._enableCheck && node._enableCheck();
+      inp.onkeydown = e => { if (e.key === "Enter") node._check(); };
+      setTimeout(() => speak(text), 200);
+      node._check = () => {
+        const sc = similarity(q.answer, inp.value);
+        const ok = norm(inp.value) === norm(q.answer) || sc >= 90;
+        inp.style.borderColor = ok ? "#22c55e" : "#f87171";
+        inp.disabled = true;
+        node.appendChild(el(`<div class="heard">Poprawnie: „${esc(q.answer)}” (zgodność ${sc}%)</div>`));
+        verdict(ok, node);
+      };
+      return node;
+    },
+
+    // LISTA ROZWIJANA w zdaniu
+    dropdown(q, verdict) {
+      const parts = (q.q || "").split("___");
+      const sel = `<select class="gap-select"><option value="" disabled selected>— wybierz —</option>${q.options.map((o, k) => `<option value="${k}">${esc(o)}</option>`).join("")}</select>`;
+      const node = el(`<div class="q"><p class="qtext">${esc(parts[0] || "")}${sel}${esc(parts[1] || "")} ${theoryLink(q.theoryRef)}</p></div>`);
+      const s = node.querySelector("select");
+      s.onchange = () => node._enableCheck && node._enableCheck();
+      node._check = () => {
+        if (s.value === "") return;
+        const ok = +s.value === q.answer;
+        s.style.borderColor = ok ? "#22c55e" : "#f87171";
+        s.disabled = true;
+        if (!ok) node.appendChild(el(`<div class="heard">Poprawnie: „${esc(q.options[q.answer])}”</div>`));
+        verdict(ok, node);
+      };
+      return node;
+    },
+
+    // KATEGORYZACJA — rozmieść elementy do właściwych kolumn
+    categorize(q, verdict) {
+      const node = el(`<div class="q"><p class="qtext">${esc(q.q)}</p>
+        <div class="cat-bank"></div><div class="cat-cols"></div></div>`);
+      const bank = node.querySelector(".cat-bank");
+      const cols = node.querySelector(".cat-cols");
+      const drops = q.cats.map((c, ci) => {
+        const box = el(`<div class="cat-col"><div class="cat-h">${esc(c)}</div><div class="cat-drop"></div></div>`);
+        cols.appendChild(box);
+        return box.querySelector(".cat-drop");
+      });
+      let selected = null;
+      const items = q.items.map((it, i) => ({ it, i })).sort(() => Math.random() - 0.5);
+      items.forEach(({ it, i }) => {
+        const chip = el(`<button class="word" data-i="${i}">${esc(it.t)}</button>`);
+        chip.onclick = () => {
+          node.querySelectorAll(".word").forEach(x => x.classList.remove("sel"));
+          chip.classList.add("sel"); selected = chip;
+        };
+        bank.appendChild(chip);
+      });
+      drops.forEach(drop => {
+        drop.onclick = () => {
+          if (!selected) return;
+          drop.appendChild(selected); selected.classList.remove("sel"); selected = null;
+          if (!bank.querySelector(".word")) node._enableCheck && node._enableCheck();
+        };
+      });
+      node._check = () => {
+        let ok = !bank.querySelector(".word");
+        drops.forEach((drop, ci) => {
+          drop.querySelectorAll(".word").forEach(chip => {
+            const correct = q.items[+chip.dataset.i].cat === ci;
+            chip.classList.add(correct ? "correct" : "wrong");
+            if (!correct) ok = false;
+            chip.disabled = true;
+          });
+        });
+        bank.querySelectorAll(".word").forEach(c => { c.classList.add("wrong"); });
+        verdict(ok, node);
+      };
+      return node;
+    },
+
+    // TRANSFORMACJA ZDANIA — przekształć zdanie wg polecenia
+    transform(q, verdict) {
+      const node = el(`<div class="q"><p class="qtext">${esc(q.q)} ${theoryLink(q.theoryRef)}</p>
+        ${q.given ? `<div class="given">„${esc(q.given)}”</div>` : ""}
+        ${q.hint ? `<div class="hint-line">💡 ${esc(q.hint)}</div>` : ""}
+        <input class="gap-input" placeholder="wpisz przekształcone zdanie…"></div>`);
+      const inp = node.querySelector("input");
+      inp.oninput = () => node._enableCheck && node._enableCheck();
+      inp.onkeydown = e => { if (e.key === "Enter") node._check(); };
+      const answers = Array.isArray(q.answer) ? q.answer : [q.answer];
+      node._check = () => {
+        const got = norm(inp.value);
+        const ok = answers.some(a => norm(a) === got) || answers.some(a => similarity(a, inp.value) >= 92);
+        inp.style.borderColor = ok ? "#22c55e" : "#f87171";
+        inp.disabled = true;
+        if (!ok) node.appendChild(el(`<div class="heard">Przykład poprawnej odpowiedzi: „${esc(answers[0])}”</div>`));
+        verdict(ok, node);
+      };
+      setTimeout(() => inp.focus(), 50);
       return node;
     }
   };
