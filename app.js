@@ -276,11 +276,18 @@
   }
 
   /* ---------------- GRAFIKA GÓRY (lewy panel) ---------------- */
-  // współrzędne poziomów na zboczu: A1 (dół) ... C2 (szczyt)
-  const MTN_PTS = [[15, 90], [29, 75], [42, 60], [55, 45], [64, 29], [50, 12]];
+  // Wijący się szlak (wąż) od podnóża (dół) po szczyt (góra) — dużo zakrętów.
+  const MTN_TRAIL = [
+    [13, 93], [27, 90], [41, 86], [30, 81], [17, 77], [33, 73], [49, 70],
+    [38, 65], [24, 61], [40, 57], [56, 53], [46, 48], [32, 44], [48, 40],
+    [63, 36], [54, 31], [40, 27], [52, 23], [62, 19], [50, 14], [50, 10]
+  ];
+  // Znaczniki poziomów rozmieszczone wzdłuż węża: A1 (dół) ... C2 (szczyt)
+  const MTN_MARK = [0, 4, 8, 12, 16, 20];
+  const MTN_PTS = MTN_MARK.map(i => MTN_TRAIL[i]);
   function buildMountain() {
     const reach = reachableIdx();
-    const path = MTN_PTS.map(p => p.join(",")).join(" ");
+    const path = MTN_TRAIL.map(p => p.join(",")).join(" ");
     let markers = "";
     C.levels.forEach((lv, i) => {
       const [x, y] = MTN_PTS[i];
