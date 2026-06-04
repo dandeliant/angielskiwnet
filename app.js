@@ -11,15 +11,29 @@
   const SKEY = "angielskiwnet_progress_v1";
   const state = loadState();
   function loadState() {
-    try {
-      const s = JSON.parse(localStorage.getItem(SKEY));
-      if (s && s.done) return s;
-    } catch (e) {}
-    return { done: {}, xp: 0, streak: 0, lastDay: null, startLevel: "A1", edit: false };
+    let s = null;
+    try { s = JSON.parse(localStorage.getItem(SKEY)); } catch (e) {}
+    if (!s || typeof s !== "object" || !s.done) s = {};
+    // scal z domyślnymi, aby starsze zapisy dostały nowe pola
+    return Object.assign({
+      done: {}, xp: 0, streak: 0, lastDay: null, startLevel: "A1", edit: false,
+      srs: {}, wrong: [], badges: {}, flags: {}, custom: [], weekXp: {}, league: null, sound: true
+    }, s);
   }
   function save() { localStorage.setItem(SKEY, JSON.stringify(state)); }
   function stepKey(l, u, s) { return l + "/" + u + "/" + s; }
   function unitKey(l, u) { return l + "/" + u; }
+
+  // klucz tygodnia ISO (do ligi tygodniowej)
+  function weekKey(d) {
+    d = d ? new Date(d) : new Date();
+    const dt = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+    const day = dt.getUTCDay() || 7;
+    dt.setUTCDate(dt.getUTCDate() + 4 - day);
+    const ys = new Date(Date.UTC(dt.getUTCFullYear(), 0, 1));
+    const wn = Math.ceil((((dt - ys) / 86400000) + 1) / 7);
+    return dt.getUTCFullYear() + "-W" + String(wn).padStart(2, "0");
+  }
 
   function bumpStreak() {
     const today = new Date().toDateString();
@@ -29,7 +43,141 @@
       state.lastDay = today;
     }
   }
-  function addXp(n) { state.xp += n; bumpStreak(); save(); }
+  function addXp(n) {
+    state.xp += n;
+    const wk = weekKey();
+    state.weekXp = state.weekXp || {};
+    state.weekXp[wk] = (state.weekXp[wk] || 0) + n;
+    bumpStreak(); save(); checkBadges();
+  }
+
+  /* ---------------- DŹWIĘKI SUKCESU (WebAudio, bez plików) ---------------- */
+  let actx = null;
+  function sfx(type) {
+    if (!state.sound) return;
+    try {
+      actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+      if (actx.state === "suspended") actx.resume();
+      const seq = type === "badge" ? [[523, 0], [659, .1], [784, .2], [1047, .32]]
+        : type === "win" ? [[660, 0], [880, .09], [1175, .18]]
+        : type === "fail" ? [[330, 0], [247, .12]]
+        : [[880, 0]];
+      seq.forEach(([f, t]) => {
+        const o = actx.createOscillator(), g = actx.createGain();
+        o.type = "sine"; o.frequency.value = f;
+        o.connect(g); g.connect(actx.destination);
+        const st = actx.currentTime + t;
+        g.gain.setValueAtTime(.0001, st);
+        g.gain.exponentialRampToValueAtTime(.22, st + .02);
+        g.gain.exponentialRampToValueAtTime(.0001, st + .2);
+        o.start(st); o.stop(st + .22);
+      });
+    } catch (e) {}
+  }
+
+  /* ---------------- SŁOWNIK KONTEKSTOWY (EN→PL z całego kursu) ---------------- */
+  let GLOSSARY = null;
+  function buildGlossary() {
+    if (GLOSSARY) return GLOSSARY;
+    GLOSSARY = {};
+    const add = (en, pl) => {
+      if (!en || !pl) return;
+      String(en).split("/").forEach(part => {
+        const k = norm(part.replace(/\(.*?\)/g, "").replace(/…/g, ""));
+        if (k && !GLOSSARY[k]) GLOSSARY[k] = { pl: pl, en: part.trim() };
+      });
+    };
+    const scan = lvls => (lvls || []).forEach(lv => lv.units.forEach(u => (u.steps || []).forEach(s => {
+      if (s.type === "vocab") (s.words || []).forEach(w => add(w.en, w.pl));
+    })));
+    scan(C.levels);
+    scan(C.paths);
+    (state.custom || []).forEach(d => (d.words || []).forEach(w => add(w.en, w.pl)));
+    return GLOSSARY;
+  }
+  function lookupWord(word) { return buildGlossary()[norm(word)] || null; }
+
+  /* ---------------- SRS (powtórki, algorytm typu SM-2) ---------------- */
+  function srsAdd(en, pl) {
+    const id = "v:" + norm(en);
+    if (!id || id === "v:") return;
+    if (!state.srs[id]) state.srs[id] = { en: en, pl: pl || "", ef: 2.5, int: 0, reps: 0, lapses: 0, due: Date.now() };
+    GLOSSARY = null;
+  }
+  function srsDue() {
+    const now = Date.now();
+    return Object.keys(state.srs).filter(id => state.srs[id].due <= now)
+      .map(id => Object.assign({ id: id }, state.srs[id]));
+  }
+  function srsNextDue() {
+    const ts = Object.keys(state.srs).map(id => state.srs[id].due);
+    return ts.length ? Math.min.apply(null, ts) : null;
+  }
+  // q: 0 = znów, 3 = trudne, 4 = dobre, 5 = łatwe
+  function srsGrade(id, q) {
+    const c = state.srs[id];
+    if (!c) return;
+    if (q < 3) {
+      c.reps = 0; c.int = 0; c.lapses++; c.due = Date.now() + 10 * 60 * 1000; // za 10 min
+    } else {
+      c.reps++;
+      c.ef = Math.max(1.3, c.ef + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)));
+      if (c.reps === 1) c.int = 1;
+      else if (c.reps === 2) c.int = 6;
+      else c.int = Math.round(c.int * c.ef);
+      c.due = Date.now() + c.int * 86400000;
+    }
+    save();
+  }
+
+  /* ---------------- KOLEJKA BŁĘDÓW (słabe punkty) ---------------- */
+  function recordWrong(q, src) {
+    if (!q || !q.kind) return;
+    const sig = q.kind + "|" + (q.q || q.given || q.audio || "") + "|" +
+      JSON.stringify(q.answer != null ? q.answer : (q.answers || q.pairs || q.words || q.items || ""));
+    state.wrong = (state.wrong || []).filter(w => w.sig !== sig);
+    state.wrong.unshift({ sig: sig, q: q, src: src || "", ts: Date.now() });
+    if (state.wrong.length > 150) state.wrong.pop();
+    save();
+  }
+
+  /* ---------------- ODZNAKI / TROFEA ---------------- */
+  const LVL_ORDER = ["A1", "A2", "B1", "B2", "C1", "C2"];
+  const BADGES = [
+    { id: "first", icon: "🥾", name: "Pierwszy krok", desc: "Ukończ pierwszą lekcję", test: s => Object.keys(s.done).length >= 1 },
+    { id: "xp100", icon: "⭐", name: "100 XP", desc: "Zdobądź 100 XP", test: s => s.xp >= 100 },
+    { id: "xp500", icon: "🌟", name: "500 XP", desc: "Zdobądź 500 XP", test: s => s.xp >= 500 },
+    { id: "xp2000", icon: "💫", name: "2000 XP", desc: "Zdobądź 2000 XP", test: s => s.xp >= 2000 },
+    { id: "streak3", icon: "🔥", name: "Rozgrzewka", desc: "3 dni nauki z rzędu", test: s => s.streak >= 3 },
+    { id: "streak7", icon: "🔥", name: "Tydzień ognia", desc: "7 dni z rzędu", test: s => s.streak >= 7 },
+    { id: "streak30", icon: "🏔️", name: "Miesiąc na szlaku", desc: "30 dni z rzędu", test: s => s.streak >= 30 },
+    { id: "words50", icon: "📚", name: "Słownik kieszonkowy", desc: "50 słówek w powtórkach", test: s => Object.keys(s.srs || {}).length >= 50 },
+    { id: "words200", icon: "📖", name: "Leksykon", desc: "200 słówek w powtórkach", test: s => Object.keys(s.srs || {}).length >= 200 },
+    { id: "review", icon: "♻️", name: "Praca nad błędami", desc: "Ukończ powtórkę słabych punktów", test: s => s.flags && s.flags.didReview },
+    { id: "shadow", icon: "🗣️", name: "Cień native speakera", desc: "Wykonaj ćwiczenie shadowing", test: s => s.flags && s.flags.didShadow },
+    { id: "import", icon: "📥", name: "Własna talia", desc: "Zaimportuj własne słówka", test: s => s.flags && s.flags.didImport },
+    { id: "perfect", icon: "💯", name: "Perfekcjonista", desc: "Zalicz sprawdzian bez błędu", test: s => s.flags && s.flags.didPerfect },
+    { id: "srsday", icon: "🧠", name: "Mistrz powtórek", desc: "Powtórz fiszki w SRS", test: s => s.flags && s.flags.didSrs }
+  ].concat(LVL_ORDER.map(id => ({
+    id: "lvl_" + id, icon: "⛰️", name: "Zdobyty szczyt " + id, desc: "Ukończ cały poziom " + id,
+    test: () => isLevelComplete(LVL_ORDER.indexOf(id))
+  })));
+  function checkBadges() {
+    const newly = [];
+    BADGES.forEach(b => {
+      if (state.badges[b.id]) return;
+      let ok = false;
+      try { ok = !!b.test(state); } catch (e) {}
+      if (ok) { state.badges[b.id] = Date.now(); newly.push(b); }
+    });
+    if (newly.length) {
+      save();
+      newly.forEach(b => { sfx("badge"); toast("🏆 Odznaka: " + b.name); });
+      const bar = document.getElementById("topbar"); if (bar) renderTop();
+    }
+    return newly;
+  }
+  function setFlag(name) { state.flags = state.flags || {}; if (!state.flags[name]) { state.flags[name] = true; save(); checkBadges(); } }
 
   function isStepDone(l, u, s) { return !!state.done[stepKey(l, u, s)]; }
   function unitSteps(level, unit) { return unit.steps || []; }
@@ -172,19 +320,66 @@
     if (s) speak(s.dataset.say || s.textContent);
   });
 
-  /* ---------------- TOPBAR ---------------- */
+  /* ---------------- TOPBAR + MENU ---------------- */
   function renderTop() {
     const bar = document.getElementById("topbar");
+    const due = srsDue().length, weak = (state.wrong || []).length;
     bar.innerHTML = `
-      <div class="logo"><span class="peak">🏔️</span> Angielski<b>wnet</b></div>
+      <div class="logo" id="logoBtn"><span class="peak">🏔️</span> Angielski<b>wnet</b></div>
       <div class="spacer"></div>
       <span class="stat"><span class="ico">🔥</span>${state.streak}</span>
       <span class="stat"><span class="ico">⭐</span>${state.xp} XP</span>
-      <button class="btn ghost small" id="btnEdit">${state.edit ? "✏️ Edycja: WŁ" : "Edytuj treść"}</button>
       <button class="btn ghost small" id="btnMap">Mapa</button>
+      <button class="btn ghost small" id="btnMenu">☰ Menu${(due + weak) ? ` <span class="badge-dot">${due + weak}</span>` : ""}</button>
     `;
     bar.querySelector("#btnMap").onclick = renderMap;
-    bar.querySelector("#btnEdit").onclick = () => { state.edit = !state.edit; save(); renderTop(); renderMap(); };
+    bar.querySelector("#logoBtn").onclick = renderMap;
+    bar.querySelector("#btnMenu").onclick = toggleMenu;
+  }
+
+  function toggleMenu() {
+    const exist = document.getElementById("menuPanel");
+    if (exist) { exist.remove(); return; }
+    const due = srsDue().length, weak = (state.wrong || []).length;
+    const nextDue = srsNextDue();
+    const dueLabel = due ? due + " do powtórki" : (nextDue ? "następne: " + relTime(nextDue) : "brak fiszek");
+    const panel = el(`<div class="menu-panel" id="menuPanel">
+      <button class="menu-item" data-go="map"><span>🗺️</span> Szlak / mapa</button>
+      <button class="menu-item" data-go="srs"><span>🧠</span> Fiszki SRS <i>${dueLabel}</i></button>
+      <button class="menu-item" data-go="review"><span>♻️</span> Słabe punkty <i>${weak ? weak + " do poprawy" : "czysto 🎉"}</i></button>
+      <button class="menu-item" data-go="import"><span>📥</span> Import / moje słówka</button>
+      <button class="menu-item" data-go="paths"><span>🧭</span> Ścieżki tematyczne</button>
+      <button class="menu-item" data-go="trophies"><span>🏆</span> Trofea i odznaki</button>
+      <button class="menu-item" data-go="league"><span>📊</span> Liga tygodniowa</button>
+      <div class="menu-sep"></div>
+      <button class="menu-item" data-go="sound"><span>${state.sound ? "🔊" : "🔇"}</span> Dźwięki: ${state.sound ? "WŁ" : "WYŁ"}</button>
+      <button class="menu-item" data-go="edit"><span>✏️</span> Edycja treści: ${state.edit ? "WŁ" : "WYŁ"}</button>
+    </div>`);
+    document.body.appendChild(panel);
+    const close = () => { const p = document.getElementById("menuPanel"); if (p) p.remove(); };
+    panel.querySelectorAll(".menu-item").forEach(b => b.onclick = () => {
+      const go = b.dataset.go; close();
+      if (go === "map") renderMap();
+      else if (go === "srs") renderSRS();
+      else if (go === "review") renderReview();
+      else if (go === "import") renderImport();
+      else if (go === "paths") renderPaths();
+      else if (go === "trophies") renderTrophies();
+      else if (go === "league") renderLeague();
+      else if (go === "sound") { state.sound = !state.sound; save(); sfx("win"); renderTop(); }
+      else if (go === "edit") { state.edit = !state.edit; save(); renderTop(); renderMap(); }
+    });
+    setTimeout(() => document.addEventListener("click", function h(e) {
+      if (!e.target.closest("#menuPanel") && !e.target.closest("#btnMenu")) { close(); document.removeEventListener("click", h); }
+    }), 0);
+  }
+  function relTime(ts) {
+    const d = ts - Date.now();
+    if (d <= 0) return "teraz";
+    const h = Math.round(d / 3600000);
+    if (h < 1) return "za " + Math.max(1, Math.round(d / 60000)) + " min";
+    if (h < 24) return "za " + h + " h";
+    return "za " + Math.round(h / 24) + " dni";
   }
 
   /* ---------------- WIDOK STARTOWY ---------------- */
@@ -419,7 +614,9 @@
   }
 
   /* ---------------- URUCHOMIENIE JEDNOSTKI (sekwencja kroków) ---------------- */
-  function openUnit(level, unit) {
+  let backTo = renderMap; // dokąd wracać po zamknięciu/ukończeniu (mapa lub ścieżki)
+  function openUnit(level, unit, back) {
+    backTo = back || renderMap;
     const steps = unitSteps(level, unit);
     // zacznij od pierwszego nieukończonego (lub od początku, jeśli wszystko zrobione)
     let idx = steps.findIndex(st => !isStepDone(level.id, unit.id, st.id));
@@ -441,13 +638,14 @@
         <div class="sheet-foot" id="foot"></div>
       </div>`);
     openSheet(sheet);
-    sheet.querySelector(".close-x").onclick = () => { closeSheet(); renderMap(); };
+    sheet.querySelector(".close-x").onclick = () => { closeSheet(); backTo(); };
     const body = sheet.querySelector("#body");
     const foot = sheet.querySelector("#foot");
 
     const next = () => {
       state.done[stepKey(level.id, unit.id, step.id)] = true;
       addXp(step.type === "boss" ? 30 : 10);
+      sfx("win");
       renderTop();
       if (idx + 1 < total) runStep(level, unit, steps, idx + 1);
       else finishUnit(level, unit);
@@ -465,15 +663,16 @@
   }
 
   function finishUnit(level, unit) {
+    sfx("badge"); checkBadges();
     const sheet = el(`
       <div class="sheet"><div class="sheet-body celebrate">
-        <div class="big">🎉🏕️</div>
+        <div class="big climber-pop">🎉🏕️🧗</div>
         <h2>Zdobyto: ${esc(unit.title)}</h2>
         <p style="color:#93a4c4">Świetna robota! Kolejny punkt na szlaku zaliczony.</p>
         <button class="btn primary" id="cont">Wróć na szlak</button>
       </div></div>`);
     openSheet(sheet);
-    sheet.querySelector("#cont").onclick = () => { closeSheet(); renderMap(); };
+    sheet.querySelector("#cont").onclick = () => { closeSheet(); backTo(); };
   }
 
   function footNext(foot, label, fn, enabled) {
@@ -510,7 +709,11 @@
         f.querySelector("button").onclick = () => speak(w.example || w.en);
         ctx.body.appendChild(f);
       });
-      footNext(ctx.foot, "Umiem te słowa →", ctx.next);
+      footNext(ctx.foot, "Umiem te słowa →", () => {
+        (s.words || []).forEach(w => srsAdd(w.en, w.pl));
+        checkBadges();
+        ctx.next();
+      });
     },
 
     quiz: quizLike,
@@ -558,10 +761,13 @@
         <button class="btn small" data-listen>🔊 Przeczytaj na głos</button></div>`;
       runQuestions(ctx, s.questions, {
         title: s.title,
+        src: ctx.level.id + "/" + ctx.unit.id + "/" + ctx.step.id,
         header: head,
         bindHeader(body) {
           const b = body.querySelector("[data-listen]");
           if (b) b.onclick = () => speak(stripHtml(s.passage));
+          const psg = body.querySelector(".passage");
+          if (psg) makeClickableWords(psg);
         }
       });
     },
@@ -577,6 +783,7 @@
         </div></div>`;
       runQuestions(ctx, s.questions, {
         title: s.title,
+        src: ctx.level.id + "/" + ctx.unit.id + "/" + ctx.step.id,
         header: head,
         bindHeader(body) {
           const p = body.querySelector("[data-play]"), sl = body.querySelector("[data-slow]");
@@ -613,14 +820,31 @@
       node._enableCheck = () => { ctx.foot.querySelector("#nextBtn").disabled = false; };
     }
     function verdict(ok, node) {
-      if (ok) correct++;
+      const q = qs[qi];
+      if (ok) correct++; else if (!opts.noRecord) recordWrong(q, opts.src);
+      sfx(ok ? "win" : "fail");
+      if (opts.onResult) { try { opts.onResult(ok, q, qi); } catch (e) {} }
       const fb = el(`<div class="feedback ${ok ? "ok" : "no"}">${ok ? "✅ Dobrze!" : "❌ Spróbuj zapamiętać poprawną odpowiedź."}</div>`);
       ctx.body.appendChild(fb);
       footNext(ctx.foot, "Dalej →", () => { qi++; show(); }, true);
     }
     show();
   }
-  function quizLike(ctx) { runQuestions(ctx, ctx.step.questions, { title: ctx.step.title }); }
+  function quizLike(ctx) {
+    const src = ctx.level.id + "/" + ctx.unit.id + "/" + ctx.step.id;
+    const qs = ctx.step.questions || [];
+    const isBoss = ctx.step.type === "boss";
+    runQuestions(ctx, qs, {
+      title: ctx.step.title, src: src,
+      onResult: isBoss ? (ok => { if (!ok) ctx._anyWrong = true; }) : undefined,
+      onDone: undefined
+    });
+    if (isBoss) {
+      // owijamy next: jeśli boss zaliczony bez błędu → odznaka perfekcjonisty
+      const origNext = ctx.next;
+      ctx.next = () => { if (!ctx._anyWrong) setFlag("didPerfect"); origNext(); };
+    }
+  }
 
   const QTYPES = {
     choice(q, verdict) {
@@ -858,13 +1082,38 @@
     }
   };
 
-  /* ---------------- BOX NAGRYWANIA + OCENA WYMOWY ---------------- */
+  /* ---------------- OCENA WYMOWY SŁOWO-PO-SŁOWIE ---------------- */
+  // Dopasowanie słów wzorca do rozpoznanych (zachłannie, z zachowaniem kolejności)
+  function alignWords(target, said) {
+    const tw = norm(target).split(" ").filter(Boolean);
+    const sw = norm(said).split(" ").filter(Boolean);
+    let j = 0;
+    return tw.map(w => {
+      let hit = false;
+      for (let k = j; k < sw.length; k++) { if (sw[k] === w) { hit = true; j = k + 1; break; } }
+      if (!hit && sw.indexOf(w) >= 0) hit = "loose"; // jest, ale nie w kolejności
+      return { w: w, ok: hit };
+    });
+  }
+  function renderWordScores(target, said) {
+    const words = alignWords(target, said);
+    const good = words.filter(x => x.ok === true).length;
+    const pct = Math.round(good / Math.max(words.length, 1) * 100);
+    const html = words.map(x => {
+      const cls = x.ok === true ? "wgood" : x.ok === "loose" ? "wmid" : "wbad";
+      return `<span class="wscore ${cls}">${esc(x.w)}</span>`;
+    }).join(" ");
+    return { pct: pct, html: html };
+  }
+
+  /* ---------------- BOX NAGRYWANIA + OCENA WYMOWY + SHADOWING ---------------- */
   function buildRecordBox(target) {
     const box = el(`<div class="record-box">
       <div class="row" style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
         <button class="btn small" data-rec>🎙️ Nagraj</button>
         <button class="btn small" data-play2 disabled>▶️ Odtwórz</button>
         <button class="btn small" data-score>🎯 Oceń wymowę</button>
+        <button class="btn small" data-shadow>🌓 Shadowing</button>
       </div>
       <div data-out></div></div>`);
     const out = box.querySelector("[data-out]");
@@ -890,23 +1139,92 @@
     };
     playBtn.onclick = () => { if (blobUrl) new Audio(blobUrl).play(); };
 
+    function showScore(said, extra) {
+      const ws = renderWordScores(target, said);
+      const cls = ws.pct >= 80 ? "good" : ws.pct >= 55 ? "mid" : "low";
+      out.innerHTML = `<span class="score-pill ${cls}">Wymowa: ${ws.pct}%</span>${extra || ""}
+        <div class="word-line">${ws.html}</div>
+        <div class="heard">Usłyszano: „${esc(said)}” &nbsp;·&nbsp; <span class="wgood">zielone</span> = OK, <span class="wbad">czerwone</span> = popraw</div>`;
+    }
+
     box.querySelector("[data-score]").onclick = () => {
       out.innerHTML = `<div class="heard">🎧 Mów teraz… (czytaj zdanie na głos)</div>`;
       const r = recognizeOnce(
-        said => {
-          const sc = similarity(target, said);
-          const cls = sc >= 80 ? "good" : sc >= 55 ? "mid" : "low";
-          out.innerHTML = `<span class="score-pill ${cls}">Wymowa: ${sc}%</span>
-            <div class="heard">Usłyszano: „${esc(said)}”</div>`;
-        },
-        err => {
-          out.innerHTML = `<div class="heard">Ocena na żywo niedostępna (${esc(err)}). Użyj „Nagraj” + „Odtwórz”, by porównać się ze wzorem 🔊.</div>`;
-        }
+        said => showScore(said),
+        err => { out.innerHTML = `<div class="heard">Ocena na żywo niedostępna (${esc(err)}). Użyj „Nagraj” + „Odtwórz”, by porównać się ze wzorem 🔊.</div>`; }
       );
       if (!r) out.innerHTML = `<div class="heard">Twoja przeglądarka nie wspiera rozpoznawania mowy. Użyj Chrome (z internetem), albo porównaj ręcznie: 🔊 wzór vs ▶️ Twoje nagranie.</div>`;
     };
+
+    // SHADOWING: usłysz wzór, powtórz równolegle — ocena słów + rytmu (tempa)
+    box.querySelector("[data-shadow]").onclick = () => {
+      out.innerHTML = `<div class="heard">🌓 Słuchaj wzoru i powtarzaj na głos równo z lektorem…</div>`;
+      const words = norm(target).split(" ").filter(Boolean).length;
+      const expected = Math.max(0.8, words * 0.42); // szacowany czas wypowiedzi (s)
+      if (!window.speechSynthesis) { toast("Brak syntezatora mowy."); return; }
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(target);
+      u.lang = "en-GB"; u.rate = 0.92;
+      const v = pickVoice(); if (v) u.voice = v;
+      u.onend = () => {
+        const t0 = Date.now();
+        const r = recognizeOnce(
+          said => {
+            const dur = (Date.now() - t0) / 1000;
+            const rhythm = Math.max(0, Math.round(100 - Math.abs(dur - expected) / expected * 100));
+            const rcls = rhythm >= 75 ? "good" : rhythm >= 45 ? "mid" : "low";
+            showScore(said, ` <span class="score-pill ${rcls}">Rytm: ${rhythm}%</span>`);
+            setFlag("didShadow");
+          },
+          err => { out.innerHTML = `<div class="heard">Shadowing wymaga rozpoznawania mowy (Chrome + internet). Błąd: ${esc(err)}.</div>`; }
+        );
+        if (!r) out.innerHTML = `<div class="heard">Twoja przeglądarka nie wspiera rozpoznawania mowy — shadowing działa najlepiej w Chrome online.</div>`;
+      };
+      speechSynthesis.speak(u);
+    };
     return box;
   }
+
+  /* ---------------- KLIKALNE SŁOWA (tłumaczenie kontekstowe) ---------------- */
+  function makeClickableWords(container) {
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null);
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    nodes.forEach(tn => {
+      if (!/[A-Za-z]/.test(tn.nodeValue)) return;
+      if (tn.parentNode && tn.parentNode.classList && tn.parentNode.classList.contains("rw")) return;
+      const frag = document.createDocumentFragment();
+      tn.nodeValue.split(/(\b)/).forEach(tok => {
+        if (/[A-Za-z'][A-Za-z']+/.test(tok)) {
+          const s = document.createElement("span");
+          s.className = "rw"; s.textContent = tok; frag.appendChild(s);
+        } else frag.appendChild(document.createTextNode(tok));
+      });
+      tn.parentNode.replaceChild(frag, tn);
+    });
+  }
+  function showWordTip(anchor, word, info) {
+    document.querySelectorAll(".word-tip").forEach(t => t.remove());
+    const tip = el(`<div class="word-tip">
+      <div class="wt-en">${esc(word)} <button class="btn small" data-say>🔊</button></div>
+      <div class="wt-pl">${info ? esc(info.pl) : "<i>brak tłumaczenia offline — kliknij 🔊, by usłyszeć</i>"}</div>
+    </div>`);
+    document.body.appendChild(tip);
+    const r = anchor.getBoundingClientRect();
+    tip.style.left = Math.min(window.innerWidth - tip.offsetWidth - 8, Math.max(8, r.left)) + "px";
+    tip.style.top = (window.scrollY + r.bottom + 6) + "px";
+    tip.querySelector("[data-say]").onclick = e => { e.stopPropagation(); speak(word); };
+    setTimeout(() => document.addEventListener("click", function h(e) {
+      if (!e.target.closest(".word-tip")) { tip.remove(); document.removeEventListener("click", h); }
+    }), 0);
+  }
+  document.addEventListener("click", e => {
+    const w = e.target.closest(".rw");
+    if (!w) return;
+    const word = w.textContent.trim();
+    speak(word);
+    showWordTip(w, word, lookupWord(word));
+  });
 
   /* ---------------- ODNOŚNIK DO TEORII („?”) ---------------- */
   function theoryLink(ref) {
@@ -972,6 +1290,251 @@
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob); a.download = "course.js"; a.click();
     toast("Pobrano course.js — podmień nim stary plik, aby zapisać zmiany na stałe.");
+  }
+
+  /* ---------------- WSPÓLNY RUNNER PYTAŃ W ARKUSZU ---------------- */
+  function openQuestionSheet(title, qs, opts) {
+    opts = opts || {};
+    const sheet = el(`<div class="sheet">
+      <div class="sheet-head"><button class="close-x">×</button><div class="step-bar"><i style="width:0%"></i></div>
+        <span class="stat" style="font-size:12px">${esc(title)}</span></div>
+      <div class="sheet-body" id="body"></div><div class="sheet-foot" id="foot"></div></div>`);
+    openSheet(sheet);
+    sheet.querySelector(".close-x").onclick = () => { closeSheet(); (opts.back || renderMap)(); };
+    const ctx = {
+      body: sheet.querySelector("#body"), foot: sheet.querySelector("#foot"),
+      next: () => { closeSheet(); (opts.onDone || opts.back || renderMap)(); }
+    };
+    runQuestions(ctx, qs, Object.assign({ title: title }, opts));
+  }
+
+  /* ---------------- POWTÓRKA: SŁABE PUNKTY ---------------- */
+  function renderReview() {
+    closeSheet();
+    const list = (state.wrong || []).slice(0, 20);
+    app.innerHTML = "";
+    if (!list.length) {
+      app.appendChild(el(`<div class="view"><h1 class="view-title">♻️ Słabe punkty</h1>
+        <p class="view-sub">Brak błędów do powtórki — świetna robota! 🎉 Gdy pomylisz się w jakimś zadaniu, trafi ono tutaj do przećwiczenia.</p>
+        <button class="btn primary" id="b">← Wróć na szlak</button></div>`));
+      app.querySelector("#b").onclick = renderMap;
+      return;
+    }
+    const sigs = list.map(w => w.sig), qs = list.map(w => w.q);
+    openQuestionSheet("Powtórka — słabe punkty", qs, {
+      noRecord: true,
+      onResult: (ok, q, i) => { if (ok) { state.wrong = state.wrong.filter(w => w.sig !== sigs[i]); save(); } },
+      onDone: () => { setFlag("didReview"); addXp(15); renderTop(); renderMap(); }
+    });
+  }
+
+  /* ---------------- FISZKI SRS ---------------- */
+  function renderSRS() {
+    closeSheet();
+    const due = srsDue();
+    app.innerHTML = "";
+    if (!due.length) {
+      const nd = srsNextDue(), total = Object.keys(state.srs).length;
+      app.appendChild(el(`<div class="view"><h1 class="view-title">🧠 Fiszki SRS</h1>
+        <p class="view-sub">${total ? "Wszystkie fiszki na teraz powtórzone! 👏 " + (nd ? "Następna powtórka " + relTime(nd) + "." : "") : "Nie masz jeszcze fiszek. Ukończ lekcję ze słownictwem albo zaimportuj własne słówka — trafią tu automatycznie i będą wracać w optymalnych odstępach."}</p>
+        <p style="color:#93a4c4">Słówek w systemie powtórek: <b>${total}</b></p>
+        <div class="cta-row"><button class="btn" id="imp">📥 Importuj słówka</button><button class="btn primary" id="b">← Szlak</button></div></div>`));
+      app.querySelector("#b").onclick = renderMap;
+      app.querySelector("#imp").onclick = renderImport;
+      return;
+    }
+    let idx = 0, reviewed = 0;
+    const view = el(`<div class="view"><h1 class="view-title">🧠 Fiszki SRS</h1><p class="view-sub" id="cnt"></p><div id="card"></div></div>`);
+    app.appendChild(view);
+    const cardWrap = view.querySelector("#card");
+    function card() {
+      if (idx >= due.length) {
+        setFlag("didSrs"); addXp(reviewed); renderTop();
+        view.querySelector("#cnt").textContent = "";
+        cardWrap.innerHTML = `<div class="celebrate"><div class="big">🎉</div><h2>Powtórka ukończona!</h2>
+          <p style="color:#93a4c4">Przećwiczono ${reviewed} fiszek. +${reviewed} XP. Wróć później po kolejne.</p></div>`;
+        const b = el(`<button class="btn primary" style="margin-top:14px">← Wróć na szlak</button>`); b.onclick = renderMap; cardWrap.appendChild(b);
+        return;
+      }
+      const c = due[idx];
+      view.querySelector("#cnt").textContent = `Fiszka ${idx + 1} / ${due.length}`;
+      cardWrap.innerHTML = `<div class="srs-card">
+        <div class="srs-front">${esc(c.en)} <button class="btn small" data-say>🔊</button></div>
+        <div class="srs-back hidden" id="back"><div class="srs-pl">${esc(c.pl || "—")}</div></div>
+        <div class="srs-actions" id="act"><button class="btn primary" id="reveal">Pokaż tłumaczenie</button></div></div>`;
+      cardWrap.querySelector("[data-say]").onclick = e => { e.stopPropagation(); speak(c.en); };
+      speak(c.en);
+      cardWrap.querySelector("#reveal").onclick = () => {
+        cardWrap.querySelector("#back").classList.remove("hidden");
+        cardWrap.querySelector("#act").innerHTML = `
+          <button class="btn small grade" data-q="0">Znów</button>
+          <button class="btn small grade" data-q="3">Trudne</button>
+          <button class="btn small grade" data-q="4">Dobre</button>
+          <button class="btn small grade" data-q="5">Łatwe</button>`;
+        cardWrap.querySelectorAll(".grade").forEach(b => b.onclick = () => { srsGrade(c.id, +b.dataset.q); reviewed++; idx++; sfx("win"); card(); });
+      };
+    }
+    card();
+  }
+
+  /* ---------------- IMPORT WŁASNYCH SŁÓWEK ---------------- */
+  function renderImport() {
+    closeSheet();
+    app.innerHTML = "";
+    const view = el(`<div class="view"><h1 class="view-title">📥 Import / moje słówka</h1>
+      <p class="view-sub">Wklej własne słówka — jedna para na linię. Separatory: <code>=</code>, <code>;</code>, tabulator lub <code> - </code>. Możesz też wkleić sam angielski tekst — utworzymy fiszki (do nauki ze słuchu i pisowni).</p>
+      <textarea id="ta" class="import-ta" placeholder="dog = pies
+to improve = poprawiać
+weather = pogoda"></textarea>
+      <div class="row" style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0">
+        <input id="nm" class="gap-input" style="flex:1;min-width:160px" placeholder="Nazwa talii (opcjonalnie)">
+        <button class="btn primary" id="add">Utwórz talię</button>
+      </div>
+      <div id="decks"></div>
+      <button class="btn" id="back" style="margin-top:14px">← Wróć na szlak</button></div>`);
+    app.appendChild(view);
+    view.querySelector("#back").onclick = renderMap;
+    function parse(text) {
+      const words = [];
+      (text || "").split(/\n+/).forEach(line => {
+        line = line.trim(); if (!line) return;
+        const m = line.split(/\s*[=;\t]\s*|\s+-\s+/);
+        if (m.length >= 2 && m[0] && m[1]) words.push({ en: m[0].trim(), pl: m.slice(1).join(" ").trim() });
+        else line.replace(/[^A-Za-z' ]/g, " ").split(/\s+/).forEach(w => { if (w.length > 2) words.push({ en: w.toLowerCase(), pl: "" }); });
+      });
+      const seen = {}; return words.filter(w => { const k = norm(w.en); if (!k || seen[k]) return false; seen[k] = 1; return true; });
+    }
+    view.querySelector("#add").onclick = () => {
+      const words = parse(view.querySelector("#ta").value);
+      if (!words.length) { toast("Wklej najpierw słówka."); return; }
+      const name = view.querySelector("#nm").value.trim() || ("Moja talia " + ((state.custom || []).length + 1));
+      state.custom = state.custom || [];
+      state.custom.push({ id: "d" + Date.now(), name: name, words: words, created: Date.now() });
+      words.forEach(w => srsAdd(w.en, w.pl));
+      GLOSSARY = null; setFlag("didImport"); save(); renderTop();
+      toast("Dodano talię „" + name + "” (" + words.length + " słówek) — trafiły też do powtórek SRS.");
+      view.querySelector("#ta").value = ""; view.querySelector("#nm").value = "";
+      drawDecks();
+    };
+    function drawDecks() {
+      const box = view.querySelector("#decks"); box.innerHTML = "";
+      if (!(state.custom || []).length) { box.appendChild(el(`<p class="footer-note">Nie masz jeszcze własnych talii.</p>`)); return; }
+      box.appendChild(el(`<h2 style="font-size:18px;margin:14px 0 8px">Twoje talie</h2>`));
+      state.custom.slice().reverse().forEach(d => {
+        const row = el(`<div class="deck-row"><div><b>${esc(d.name)}</b> <span class="footer-note">${d.words.length} słówek</span></div>
+          <div class="row" style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn small" data-learn>📖 Ucz się</button>
+            <button class="btn small" data-quiz>📝 Quiz</button>
+            <button class="btn small ghost" data-del>🗑️</button></div></div>`);
+        row.querySelector("[data-learn]").onclick = () => learnDeck(d);
+        row.querySelector("[data-quiz]").onclick = () => quizDeck(d);
+        row.querySelector("[data-del]").onclick = () => { state.custom = state.custom.filter(x => x.id !== d.id); GLOSSARY = null; save(); drawDecks(); };
+        box.appendChild(row);
+      });
+    }
+    drawDecks();
+  }
+  function learnDeck(d) {
+    const sheet = el(`<div class="sheet"><div class="sheet-head"><button class="close-x">×</button><div class="step-bar"><i style="width:100%"></i></div><span class="stat" style="font-size:12px">${esc(d.name)}</span></div><div class="sheet-body" id="body"></div><div class="sheet-foot" id="foot"></div></div>`);
+    openSheet(sheet);
+    sheet.querySelector(".close-x").onclick = () => { closeSheet(); renderImport(); };
+    const body = sheet.querySelector("#body");
+    body.innerHTML = `<div class="theory"><h2>📖 ${esc(d.name)}</h2></div>`;
+    d.words.forEach(w => {
+      const f = el(`<div class="flash"><div><div class="en">${esc(w.en)}</div><div class="pl">${esc(w.pl || "—")}</div></div><button class="btn small">🔊</button></div>`);
+      f.querySelector("button").onclick = () => speak(w.en);
+      body.appendChild(f);
+    });
+    footNext(sheet.querySelector("#foot"), "Gotowe →", () => { closeSheet(); renderImport(); });
+  }
+  function quizDeck(d) {
+    const withPl = d.words.filter(w => w.pl);
+    const qs = [];
+    d.words.forEach(w => {
+      if (w.pl && withPl.length >= 4) {
+        const others = withPl.filter(x => x !== w).sort(() => Math.random() - .5).slice(0, 3).map(x => x.pl);
+        const opts = others.concat([w.pl]).sort(() => Math.random() - .5);
+        qs.push({ kind: "choice", q: "Co znaczy „" + w.en + "”?", options: opts, answer: opts.indexOf(w.pl) });
+      }
+      qs.push({ kind: "dictation", q: "Posłuchaj i wpisz słowo:", audio: w.en, answer: w.en });
+    });
+    const sel = qs.sort(() => Math.random() - .5).slice(0, 12);
+    if (!sel.length) { toast("Za mało słówek na quiz."); return; }
+    openQuestionSheet("Quiz: " + d.name, sel, { back: renderImport, onDone: () => { addXp(10); renderTop(); renderImport(); } });
+  }
+
+  /* ---------------- TROFEA / ODZNAKI ---------------- */
+  function renderTrophies() {
+    closeSheet();
+    app.innerHTML = "";
+    const earned = BADGES.filter(b => state.badges[b.id]).length;
+    const view = el(`<div class="view"><h1 class="view-title">🏆 Trofea i odznaki</h1>
+      <p class="view-sub">Zdobyto ${earned} / ${BADGES.length}. Ucz się codziennie, zaliczaj poziomy i powtarzaj materiał, by odblokować kolejne.</p>
+      <div class="badge-grid" id="g"></div>
+      <button class="btn" id="back" style="margin-top:16px">← Wróć na szlak</button></div>`);
+    app.appendChild(view);
+    view.querySelector("#back").onclick = renderMap;
+    const g = view.querySelector("#g");
+    BADGES.forEach(b => {
+      const has = state.badges[b.id];
+      g.appendChild(el(`<div class="badge-card ${has ? "earned" : "locked"}">
+        <div class="bi">${has ? b.icon : "🔒"}</div><div class="bn">${esc(b.name)}</div><div class="bd">${esc(b.desc)}</div></div>`));
+    });
+  }
+
+  /* ---------------- LIGA TYGODNIOWA (lokalna) ---------------- */
+  function renderLeague() {
+    closeSheet();
+    app.innerHTML = "";
+    const wk = weekKey(), myXp = (state.weekXp || {})[wk] || 0;
+    const names = ["Kasia", "Tomek", "Olek", "Marta", "Piotr", "Ela", "Bartek", "Zosia", "Adam", "Nina"];
+    let seed = 0; for (let i = 0; i < wk.length; i++) seed = (seed * 31 + wk.charCodeAt(i)) >>> 0;
+    function rnd() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }
+    const bots = names.map(n => ({ name: n, xp: Math.round(40 + rnd() * 460) }));
+    const all = bots.concat([{ name: "Ty", me: true, xp: myXp }]).sort((a, b) => b.xp - a.xp);
+    const rank = all.findIndex(x => x.me) + 1;
+    const view = el(`<div class="view"><h1 class="view-title">📊 Liga tygodniowa</h1>
+      <p class="view-sub">Tydzień ${wk}. Zdobywaj XP, by piąć się w rankingu — top 3 awansuje, ostatni spadają. Lista resetuje się co tydzień. <i>(Wersja lokalna: przeciwnicy generowani na Twoim urządzeniu; liga ze znajomymi wymagałaby konta w chmurze.)</i></p>
+      <div class="ladder" id="l"></div>
+      <button class="btn" id="back" style="margin-top:16px">← Wróć na szlak</button></div>`);
+    app.appendChild(view);
+    view.querySelector("#back").onclick = renderMap;
+    const l = view.querySelector("#l");
+    all.forEach((x, i) => {
+      const zone = i < 3 ? "promo" : i >= all.length - 2 ? "drop" : "";
+      l.appendChild(el(`<div class="rank-row ${x.me ? "me" : ""} ${zone}">
+        <span class="rk">${i + 1}</span><span class="nm">${i < 3 ? "🏅 " : ""}${esc(x.name)}</span><span class="xp">${x.xp} XP</span></div>`));
+    });
+    l.appendChild(el(`<p class="footer-note">Jesteś na ${rank}. miejscu z ${myXp} XP w tym tygodniu.</p>`));
+  }
+
+  /* ---------------- ŚCIEŻKI TEMATYCZNE ---------------- */
+  function renderPaths() {
+    closeSheet();
+    app.innerHTML = "";
+    const paths = C.paths || [];
+    const view = el(`<div class="view"><h1 class="view-title">🧭 Ścieżki tematyczne</h1>
+      <p class="view-sub">Dodatkowe szlaki obok głównej wspinaczki CEFR — ucz się pod konkretny cel. Postęp liczony jest osobno.</p>
+      <div id="pl"></div>
+      <button class="btn" id="back" style="margin-top:16px">← Wróć na szlak</button></div>`);
+    app.appendChild(view);
+    view.querySelector("#back").onclick = renderMap;
+    const pl = view.querySelector("#pl");
+    if (!paths.length) { pl.appendChild(el(`<p class="footer-note">Brak ścieżek.</p>`)); return; }
+    paths.forEach(p => {
+      const done = (p.units || []).filter(u => isUnitDoneRaw(p, u)).length;
+      const card = el(`<div class="path-card" style="border-color:${p.color || "#38bdf8"}">
+        <div class="path-h"><span class="path-ic">${p.icon || "🧭"}</span> <b>${esc(p.name)}</b> <span class="footer-note">${done}/${p.units.length} ukończone</span></div>
+        <div class="path-sub">${esc(p.subtitle || "")}</div><div class="path-units"></div></div>`);
+      const pu = card.querySelector(".path-units");
+      p.units.forEach(u => {
+        const ud = isUnitDoneRaw(p, u);
+        const b = el(`<button class="path-unit ${ud ? "done" : ""}">${ud ? "✓ " : (u.icon || "•") + " "}${esc(u.title)}</button>`);
+        b.onclick = () => openUnit(p, u, renderPaths);
+        pu.appendChild(b);
+      });
+      pl.appendChild(card);
+    });
   }
 
   /* ---------------- OVERLAY / SHEET ---------------- */

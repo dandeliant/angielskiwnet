@@ -1,0 +1,21 @@
+{
+  "name": "Angielskiwnet — angielski od A1 do C2",
+  "short_name": "Angielskiwnet",
+  "description": "Interaktywny kurs angielskiego od bazy (A1) po szczyt (C2): mapa-szlak, quizy, dialogi, fiszki SRS, nagrywanie wymowy i brytyjski lektor.",
+  "lang": "pl",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0b1220",
+  "theme_color": "#0b1220",
+  "categories": ["education"],
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -7,6 +7,12 @@
   <meta name="description" content="Angielskiwnet — interaktywny kurs angielskiego od bazy (A1) po szczyt (C2). Mapa-szlak, quizy, dialogi, nagrywanie wymowy i brytyjski lektor.">
   <link rel="stylesheet" href="styles.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏔️</text></svg>">
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0b1220">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Angielskiwnet">
+  <link rel="apple-touch-icon" href="icon.svg">
 </head>
 <body>
   <header class="topbar" id="topbar"></header>
@@ -27,6 +33,16 @@
   <script src="levels/B2_extra.js"></script>
   <script src="levels/C1_extra.js"></script>
   <script src="levels/C2_extra.js"></script>
+  <!-- Ścieżki tematyczne (biznes / podróże / egzaminy) -->
+  <script src="paths.js"></script>
   <script src="app.js"></script>
+  <script>
+    /* PWA — rejestracja service workera (tylko w bezpiecznym kontekście, np. GitHub Pages/localhost) */
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", function () {
+        navigator.serviceWorker.register("service-worker.js").catch(function () {});
+      });
+    }
+  </script>
 </body>
 </html>
