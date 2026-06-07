@@ -1,5 +1,5 @@
 /* Angielskiwnet — Service Worker (offline, cache-first) */
-const CACHE = "angielskiwnet-v3";
+const CACHE = "angielskiwnet-v4";
 const ASSETS = [
   "./",
   "./index.html",
@@ -22,7 +22,13 @@ const ASSETS = [
   "./levels/B1_extra.js",
   "./levels/B2_extra.js",
   "./levels/C1_extra.js",
-  "./levels/C2_extra.js"
+  "./levels/C2_extra.js",
+  "./levels/A1_extra2.js",
+  "./levels/A2_extra2.js",
+  "./levels/B1_extra2.js",
+  "./levels/B2_extra2.js",
+  "./levels/C1_extra2.js",
+  "./levels/C2_extra2.js"
 ];
 
 self.addEventListener("install", e => {
